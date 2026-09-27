@@ -77,8 +77,8 @@ def test_one_index_per_node_with_operation_specific_targets():
 def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
     calls = []
 
-    def post(_url, _key, body):
-        calls.append(body)
+    def post(url, key, body):
+        calls.append((url, key, body))
         return {
             "model": "test",
             "answers": {
@@ -88,12 +88,14 @@ def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
             },
         }
 
-    monkeypatch.setenv("TYPESAFE_API_KEY", "test")
+    monkeypatch.setenv("TYPESAFE_URL", "http://192.168.1.98:8000/v1/systemone")
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.setattr(model, "post_json", post)
     d = model.choose(page(), "Find a book", [])
     assert len(calls) == 1
     assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
-    assert set(calls[0]["questions"]) == {"operation", "click_target", "type_text_target"}
+    assert calls[0][:2] == ("http://192.168.1.98:8000/v1/systemone", None)
+    assert set(calls[0][2]["questions"]) == {"operation", "click_target", "type_text_target"}
 
 
 def test_click_cannot_consume_a_text_target(monkeypatch):
@@ -151,10 +153,18 @@ def test_quoted_task_text_still_uses_the_llm(monkeypatch):
     assert sent["goal"] == 'Fly from "Zurich" to London'
 
 
-def test_missing_text_credential_stops_before_guessing(monkeypatch):
+def test_local_text_model_does_not_require_credential(monkeypatch):
     monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="TEXT_MODEL_API_KEY"):
-        model.field_text({"goal": 'Enter "Zurich"'})
+    monkeypatch.setenv("TEXT_MODEL_BASE_URL", "http://192.168.1.98:11434/v1")
+    monkeypatch.setenv("TEXT_MODEL", "qwen3:8b")
+    post = Mock(return_value={"choices": [{"message": {"content": '{"text":"Zurich"}'}}]})
+    monkeypatch.setattr(model, "post_json", post)
+
+    assert model.field_text({"goal": 'Enter "Zurich"'})[0] == "Zurich"
+    url, key, body = post.call_args.args
+    assert (url, key) == ("http://192.168.1.98:11434/v1/chat/completions", None)
+    assert body["model"] == "qwen3:8b"
+    assert "reasoning" not in body and "thinking" not in body
 
 
 @pytest.fixture
